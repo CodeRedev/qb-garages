@@ -68,6 +68,22 @@ local function filterVehiclesByCategory(vehicles, category)
     return filtered
 end
 
+local function isVehicleOut(plate)
+    local data = OutsideVehicles[plate]
+    return data ~= nil and data.entity ~= nil and DoesEntityExist(data.entity)
+end
+
+-- state 0 + entity doesn't exist = deleted/lost car, so send it to depot
+local function markMissingVehiclesAsDepot(vehicles)
+    local fee = Config.DepotPrice or 500
+    for _, v in pairs(vehicles) do
+        if v.state == 0 and not isVehicleOut(v.plate) and (v.depotprice or 0) <= 0 then
+            v.depotprice = fee
+            MySQL.update('UPDATE player_vehicles SET depotprice = ? WHERE plate = ?', { fee, v.plate })
+        end
+    end
+end
+
 -- Callbacks
 
 QBCore.Functions.CreateCallback('qb-garages:server:getHouseGarage', function(_, cb, house)
@@ -83,19 +99,29 @@ QBCore.Functions.CreateCallback('qb-garages:server:GetGarageVehicles', function(
     local vehicles
 
     if type == 'depot' then
-        vehicles = MySQL.rawExecute.await('SELECT * FROM player_vehicles WHERE citizenid = ? AND depotprice > 0', { citizenId })
+        vehicles = MySQL.rawExecute.await('SELECT * FROM player_vehicles WHERE citizenid = ? AND (depotprice > 0 OR state = 0)', { citizenId })
     elseif Config.SharedGarages then
         vehicles = MySQL.rawExecute.await('SELECT * FROM player_vehicles WHERE citizenid = ?', { citizenId })
     else
         vehicles = MySQL.rawExecute.await('SELECT * FROM player_vehicles WHERE citizenid = ? AND garage = ?', { citizenId, garage })
     end
+
+    markMissingVehiclesAsDepot(vehicles)
+
+    if type == 'depot' then
+        local onlyDepot = {}
+        for _, v in ipairs(vehicles) do
+            if (v.depotprice or 0) > 0 then onlyDepot[#onlyDepot + 1] = v end
+        end
+        vehicles = onlyDepot
+    end
+
     if #vehicles == 0 then
         cb(nil)
         return
     end
     if Config.ClassSystem then
-        local filteredVehicles = filterVehiclesByCategory(vehicles, category)
-        cb(filteredVehicles)
+        cb(filterVehiclesByCategory(vehicles, category))
     else
         cb(vehicles)
     end
